@@ -81,7 +81,9 @@ def test_build_ray_diffusion_config_preserves_explicit_stage_env(monkeypatch, ty
         runtime_cfg=runtime_cfg, stage_id=1, cfg_kv_collect_func=None, default_sampling_params=None
     )
     config = types.SimpleNamespace(
-        distributed_executor_backend="ray", parallel_config=types.SimpleNamespace(world_size=2)
+        execution_device=None,
+        distributed_executor_backend="ray",
+        parallel_config=types.SimpleNamespace(world_size=2),
     )
     monkeypatch.setattr(init_mod, "build_engine_args_dict", lambda *args: {})
     monkeypatch.setattr(init_mod, "OmniDiffusionConfig", lambda **kwargs: config)
@@ -97,6 +99,90 @@ def test_build_ray_diffusion_config_preserves_explicit_stage_env(monkeypatch, ty
     assert result.ray_worker_env == {"CUSTOM_PLUGIN_SETTING": "stage", "OMP_NUM_THREADS": "2"}
     assert result.num_gpus == 2
     assert env["OMP_NUM_THREADS"] == 2
+
+
+def test_build_diffusion_config_preserves_cpu_stage_execution(monkeypatch):
+    from vllm_omni.engine import stage_init_utils as init_mod
+
+    metadata = types.SimpleNamespace(
+        runtime_cfg=OmniStageRuntimeConfig(devices="cpu"),
+        stage_id=0,
+        cfg_kv_collect_func=None,
+        default_sampling_params=None,
+    )
+    config = types.SimpleNamespace(
+        execution_device=None,
+        stage_role="encode",
+        distributed_executor_backend="mp",
+        parallel_config=types.SimpleNamespace(world_size=1),
+    )
+    monkeypatch.setattr(init_mod, "build_engine_args_dict", lambda *args: {})
+    monkeypatch.setattr(init_mod, "OmniDiffusionConfig", lambda **kwargs: config)
+
+    result = init_mod.build_diffusion_config("model", {}, metadata)
+
+    assert result.execution_device == "cpu"
+    assert result.num_gpus == 1
+
+
+@pytest.mark.parametrize(
+    ("stage_role", "world_size", "error"),
+    [
+        ("denoise", 1, "supported only for diffusion encode stages"),
+        ("encode", 2, "requires world_size=1"),
+    ],
+)
+def test_build_diffusion_config_rejects_unsupported_cpu_stage(
+    monkeypatch, stage_role, world_size, error
+):
+    from vllm_omni.engine import stage_init_utils as init_mod
+
+    metadata = types.SimpleNamespace(
+        runtime_cfg=OmniStageRuntimeConfig(devices="cpu"),
+        stage_id=0,
+        cfg_kv_collect_func=None,
+        default_sampling_params=None,
+    )
+    config = types.SimpleNamespace(
+        execution_device=None,
+        stage_role=stage_role,
+        distributed_executor_backend="mp",
+        parallel_config=types.SimpleNamespace(world_size=world_size),
+    )
+    monkeypatch.setattr(init_mod, "build_engine_args_dict", lambda *args: {})
+    monkeypatch.setattr(init_mod, "OmniDiffusionConfig", lambda **kwargs: config)
+
+    with pytest.raises(ValueError, match=error):
+        init_mod.build_diffusion_config("model", {}, metadata)
+
+
+def test_build_diffusion_config_preserves_accelerator_execution(monkeypatch):
+    from vllm_omni.engine import stage_init_utils as init_mod
+
+    metadata = types.SimpleNamespace(
+        runtime_cfg=OmniStageRuntimeConfig(devices="0"),
+        stage_id=0,
+        cfg_kv_collect_func=None,
+        default_sampling_params=None,
+    )
+    config = types.SimpleNamespace(
+        execution_device=None,
+        stage_role="encode",
+        distributed_executor_backend="mp",
+        parallel_config=types.SimpleNamespace(world_size=1),
+    )
+    monkeypatch.setattr(init_mod, "build_engine_args_dict", lambda *args: {})
+    monkeypatch.setattr(init_mod, "OmniDiffusionConfig", lambda **kwargs: config)
+    monkeypatch.setattr(
+        init_mod,
+        "current_omni_platform",
+        types.SimpleNamespace(device_control_env_var=None, get_device_count=lambda: 1),
+    )
+
+    result = init_mod.build_diffusion_config("model", {}, metadata)
+
+    assert result.execution_device is None
+    assert result.num_gpus == 1
 
 
 @pytest.mark.parametrize(

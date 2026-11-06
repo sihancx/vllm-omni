@@ -799,7 +799,7 @@ def test_worker_rendezvous_preserves_local_device_rank(
     worker.od_config = SimpleNamespace(num_gpus=8, master_port=12345, moe_backend="auto")
     config = SimpleNamespace(kernel_config=SimpleNamespace(ir_op_priority=None))
     platform = Mock()
-    platform.get_torch_device.return_value = "cuda:0"
+    platform.get_torch_device.return_value = torch.device("cuda:0")
     rendezvous = Mock(side_effect=ReachedRendezvousError)
     monkeypatch.setenv("MASTER_ADDR", "unrelated-host")
     monkeypatch.setenv("MASTER_PORT", "9999")
@@ -827,3 +827,50 @@ def test_worker_rendezvous_preserves_local_device_rank(
     assert os.environ["MASTER_PORT"] == expected_port
     assert os.environ["LOCAL_RANK"] == str(local_rank)
     assert os.environ["RANK"] == str(rank)
+
+
+def test_worker_cpu_execution_uses_gloo_without_platform_device(monkeypatch):
+    import os
+    from contextlib import nullcontext
+    from unittest.mock import Mock
+
+    from vllm_omni.diffusion.worker import diffusion_worker as worker_module
+
+    class ReachedRendezvousError(Exception):
+        pass
+
+    worker = object.__new__(DiffusionWorker)
+    worker.rank = 0
+    worker.local_rank = 0
+    worker.distributed_init_method = "tcp://127.0.0.1:23456"
+    worker.od_config = SimpleNamespace(
+        num_gpus=1,
+        execution_device="cpu",
+        master_port=12345,
+        moe_backend="auto",
+    )
+    config = SimpleNamespace(kernel_config=SimpleNamespace(ir_op_priority=None))
+    platform = Mock()
+    rendezvous = Mock(side_effect=ReachedRendezvousError)
+    monkeypatch.setattr(worker_module, "current_omni_platform", platform)
+    monkeypatch.setattr(worker_module, "create_diffusion_vllm_config", Mock(return_value=config))
+    monkeypatch.setattr(worker_module, "_resolve_ir_op_priority", Mock(return_value=[]))
+    monkeypatch.setattr(worker_module, "set_forward_context", lambda **kwargs: nullcontext())
+    monkeypatch.setattr(worker_module, "set_current_vllm_config", lambda config: nullcontext())
+    monkeypatch.setattr(worker_module, "init_distributed_environment", rendezvous)
+
+    with pytest.raises(ReachedRendezvousError):
+        worker.init_device()
+
+    assert worker.device == torch.device("cpu")
+    platform.get_torch_device.assert_not_called()
+    platform.set_device.assert_not_called()
+    rendezvous.assert_called_once_with(
+        world_size=1,
+        rank=0,
+        distributed_init_method="tcp://127.0.0.1:23456",
+        local_rank=0,
+        backend="gloo",
+        device=torch.device("cpu"),
+    )
+    assert os.environ["LOCAL_RANK"] == "0"

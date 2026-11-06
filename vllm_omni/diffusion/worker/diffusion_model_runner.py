@@ -351,8 +351,9 @@ class DiffusionModelRunner(DiffusionStagePayloadMixin):
         model_loader = DiffusersPipelineLoader(load_config, od_config=self.od_config)
         time_before_load = time.perf_counter()
 
+        memory_profiler = DeviceMemoryProfiler() if self.device.type != "cpu" else nullcontext()
         with get_memory_context():
-            with DeviceMemoryProfiler() as m:
+            with memory_profiler as profiler:
                 self.pipeline = model_loader.load_model(
                     load_device=load_device,
                     load_format=load_format,
@@ -360,13 +361,14 @@ class DiffusionModelRunner(DiffusionStagePayloadMixin):
                     device=self.device,
                 )
         time_after_load = time.perf_counter()
+        consumed_memory = profiler.consumed_memory if profiler is not None else 0
 
         logger.info(
             "Model loading took %.4f GiB and %.6f seconds",
-            m.consumed_memory / GiB_bytes,
+            consumed_memory / GiB_bytes,
             time_after_load - time_before_load,
         )
-        self.model_memory_usage = int(m.consumed_memory)
+        self.model_memory_usage = int(consumed_memory)
         logger.info("Model runner: Model loaded successfully.")
 
         if self.od_config.streaming_output and not getattr(self.od_config, "step_execution", False):

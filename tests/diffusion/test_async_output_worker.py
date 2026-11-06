@@ -37,6 +37,7 @@ def _make_worker_proc(step_execution=False):
     proc.od_config = MagicMock()
     proc.od_config.step_execution = step_execution
     proc.gpu_id = 0
+    proc.execution_device = None
     proc.result_mq = MagicMock()
     proc._running = True
     proc._async_output_queue = queue.Queue() if not step_execution else None
@@ -145,6 +146,21 @@ class TestReturnResultAsyncPath:
         item = proc._async_output_queue.get_nowait()
         assert item[0] is output
         assert item[1] == enqueued_msg.async_output_id
+
+    def test_cpu_output_does_not_record_device_event(self, mocker):
+        proc = _make_worker_proc(step_execution=False)
+        proc.execution_device = "cpu"
+        mock_platform = mocker.patch(
+            "vllm_omni.diffusion.worker.diffusion_worker.current_omni_platform"
+        )
+
+        output = DiffusionOutput(output=torch.ones(1))
+        proc._return_result(output, rpc_id="cpu")
+
+        mock_platform.record_device_event.assert_not_called()
+        queued_output, _, event = proc._async_output_queue.get_nowait()
+        assert queued_output is output
+        assert event is None
 
     def test_batch_runner_output_triggers_async_path(self, mocker):
         """BatchRunnerOutput in request-mode should also go through async path."""

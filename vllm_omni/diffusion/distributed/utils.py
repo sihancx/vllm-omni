@@ -4,12 +4,18 @@
 import os
 
 import torch
+from vllm.config import get_current_vllm_config_or_none
 
 from vllm_omni.platforms import current_omni_platform
 
 
 def get_local_device() -> torch.device:
     """Return the torch device for the current rank based on detected device type."""
+    vllm_config = get_current_vllm_config_or_none()
+    if vllm_config is not None:
+        configured_device = getattr(vllm_config.device_config, "device", None)
+        if configured_device is not None:
+            return torch.device(configured_device)
     if current_omni_platform.is_initialized():
         return current_omni_platform.get_torch_device(current_omni_platform.current_device())
     local_rank = int(os.environ.get("LOCAL_RANK", 0))

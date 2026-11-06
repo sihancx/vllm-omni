@@ -331,8 +331,14 @@ class DiffusionWorker:
         os.environ["WORLD_SIZE"] = str(world_size)
 
         # Setup device
-        self.device = current_omni_platform.get_torch_device(self.local_rank)
-        current_omni_platform.set_device(self.device)
+        execution_device = getattr(self.od_config, "execution_device", None)
+        self.device = (
+            torch.device("cpu")
+            if execution_device == "cpu"
+            else current_omni_platform.get_torch_device(self.local_rank)
+        )
+        if self.device.type != "cpu":
+            current_omni_platform.set_device(self.device)
 
         # Create vllm_config for parallel configuration. Pass explicit device_config
         # so DeviceConfig does not rely on current_platform in worker subprocesses.
@@ -357,11 +363,13 @@ class DiffusionWorker:
             set_forward_context(vllm_config=self.vllm_config, omni_diffusion_config=self.od_config),
             set_current_vllm_config(self.vllm_config),
         ):
+            cpu_distributed_args = {"backend": "gloo", "device": self.device} if self.device.type == "cpu" else {}
             init_distributed_environment(
                 world_size=world_size,
                 rank=rank,
                 distributed_init_method=self.distributed_init_method or "env://",
                 local_rank=self.local_rank,
+                **cpu_distributed_args,
             )
             logger.info(f"Worker {self.rank}: Initialized device and distributed environment.")
 
@@ -378,6 +386,7 @@ class DiffusionWorker:
                 fully_shard_degree=parallel_config.hsdp_shard_size if parallel_config.use_hsdp else 1,
                 enable_expert_parallel=parallel_config.enable_expert_parallel,
                 use_hsdp=parallel_config.use_hsdp,
+                backend="gloo" if self.device.type == "cpu" else None,
             )
             _setup_diffusion_worker_proc_title_and_log_prefix(
                 enable_ep=parallel_config.enable_expert_parallel,
@@ -440,9 +449,10 @@ class DiffusionWorker:
                 load_format=load_format,
                 custom_pipeline_name=custom_pipeline_name,
             )
-            current_omni_platform.synchronize()
+            if self.device.type != "cpu":
+                current_omni_platform.synchronize()
             gc.collect()
-        process_memory = get_process_gpu_memory(self.local_rank)
+        process_memory = get_process_gpu_memory(self.local_rank) if self.device.type != "cpu" else None
         if process_memory is not None:
             logger.info(
                 "Worker %d: Process-scoped GPU memory after model loading: %.2f GiB.",
@@ -1176,6 +1186,7 @@ class WorkerProc:
     ):
         self.od_config = od_config
         self.gpu_id = gpu_id
+        self.execution_device = getattr(od_config, "execution_device", None)
         self.wake_event = wake_event
 
         # Inter-process Communication
@@ -1257,7 +1268,9 @@ class WorkerProc:
         # Async path: enqueue compute_done immediately, bg thread does D2H+SHM.
         if not self.od_config.step_execution and isinstance(output, (DiffusionOutput, BatchRunnerOutput)):
             async_output_id = WorkerProc._generate_async_output_id()
-            gpu_event = current_omni_platform.record_device_event()
+            gpu_event = (
+                None if self.execution_device == "cpu" else current_omni_platform.record_device_event()
+            )
             with self._async_output_done:
                 self._async_output_pending += 1
             self._async_output_queue.put((output, async_output_id, gpu_event))
@@ -1291,8 +1304,10 @@ class WorkerProc:
         Uses a side stream so the D2H transfer does not block the default
         stream where the next forward runs.
         """
-        device = torch.device(torch.accelerator.current_accelerator().type, self.gpu_id)
-        d2h_stream = torch.Stream(device=device)
+        d2h_stream = None
+        if self.execution_device != "cpu":
+            device = torch.device(torch.accelerator.current_accelerator().type, self.gpu_id)
+            d2h_stream = torch.Stream(device=device)
         transport_options = {}
         if self.od_config.video_output_transport.enable_registered_shm is True:
             transport_options["enable_registered_shm"] = True
@@ -1304,10 +1319,11 @@ class WorkerProc:
             try:
                 # Cross-stream ordering: wait for default stream to finish
                 # writing the output tensors before the side stream reads.
-                if gpu_event is not None:
+                if gpu_event is not None and d2h_stream is not None:
                     d2h_stream.wait_event(gpu_event)
                 pack_diffusion_output_shm(output, d2h_stream=d2h_stream, **transport_options)
-                d2h_stream.synchronize()
+                if d2h_stream is not None:
+                    d2h_stream.synchronize()
 
                 self._enqueue_result(
                     AsyncDiffusionOutput(

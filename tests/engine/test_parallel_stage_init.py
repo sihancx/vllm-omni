@@ -406,6 +406,16 @@ def test_run_stage_admission_excludes_remote_replicas(monkeypatch):
     assert captured["resolve"](remote_diff) is ADMISSION_EXEMPT
 
 
+def test_run_stage_admission_excludes_cpu_diffusion_stage(monkeypatch):
+    runtime = _runtime(parallel_stage_init=True)
+    runtime._init_visible_devices_baseline = None
+
+    cpu_diff = _local_diffusion_replica(0, 0, "cpu", util=None)
+    captured = _capture_admission(monkeypatch, runtime, [cpu_diff])
+
+    assert captured["resolve"](cpu_diff) is ADMISSION_EXEMPT
+
+
 # --------------------------------------------------------------------------- #
 # B1b: admission capacity is queried in the visible-ordinal namespace
 # --------------------------------------------------------------------------- #

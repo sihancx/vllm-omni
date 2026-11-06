@@ -1023,6 +1023,14 @@ class StageRuntime:
                 # skip the ledger: a LOCAL replica that resolves to None below
                 # fails admission (fail-closed in check_admission).
                 return ADMISSION_EXEMPT
+            runtime_cfg = replica.metadata.runtime_cfg
+            devices = (
+                runtime_cfg.get("devices")
+                if isinstance(runtime_cfg, Mapping)
+                else getattr(runtime_cfg, "devices", None)
+            )
+            if devices == "cpu":
+                return ADMISSION_EXEMPT
             resolved = self._resolve_replica_physical_devices(replica.metadata.stage_id, replica.metadata.runtime_cfg)
             parsed = parse_physical_device_ids(resolved)
             return sorted(parsed) if parsed else None

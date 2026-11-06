@@ -830,6 +830,10 @@ class OmniDiffusionConfig:
     # Model and path configuration (for convenience)
     stage_id: int = 0
 
+    # Explicit execution device for a stage. ``None`` preserves platform
+    # selection; ``"cpu"`` is used by CPU-only diffusion stages.
+    execution_device: str | None = None
+
     model: str | None = None
 
     model_class_name: str | None = None

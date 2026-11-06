@@ -395,6 +395,7 @@ def init_distributed_environment(
     distributed_init_method: str = "env://",
     local_rank: int = -1,
     backend: str | None = None,
+    device: torch.device | None = None,
 ):
     if backend is None:
         backend = current_omni_platform.dist_backend
@@ -417,8 +418,9 @@ def init_distributed_environment(
             world_size=world_size,
             rank=rank,
         )
-        device_id = torch.distributed.get_rank() % current_omni_platform.get_device_count()
-        current_omni_platform.set_device(current_omni_platform.get_torch_device(device_id))
+        if device is None or device.type != "cpu":
+            device_id = torch.distributed.get_rank() % current_omni_platform.get_device_count()
+            current_omni_platform.set_device(current_omni_platform.get_torch_device(device_id))
     # set the local rank
     # local_rank is not available in torch ProcessGroup,
     # see https://github.com/pytorch/pytorch/issues/122816

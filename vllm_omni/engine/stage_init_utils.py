@@ -1998,6 +1998,20 @@ def build_diffusion_config(
     )
     od_config = OmniDiffusionConfig(**{name: value for name, value in diffusion_kwargs.items() if value is not None})
 
+    stage_devices = _get_attr_or_item(metadata.runtime_cfg, "devices", None)
+    if stage_devices == "cpu":
+        if od_config.stage_role != "encode":
+            raise ValueError(
+                f"Stage {metadata.stage_id} uses CPU execution, which is currently supported only for "
+                f"diffusion encode stages; got stage_role={od_config.stage_role!r}"
+            )
+        if od_config.parallel_config.world_size != 1:
+            raise ValueError(
+                f"Stage {metadata.stage_id} uses CPU execution, which currently requires world_size=1; "
+                f"got {od_config.parallel_config.world_size}"
+            )
+        od_config.execution_device = "cpu"
+
     for dimension in ("height", "width"):
         value = getattr(metadata.default_sampling_params, dimension, None)
         if isinstance(value, int) and value > 0:
@@ -2008,6 +2022,12 @@ def build_diffusion_config(
         od_config.ray_worker_env = {str(key): str(value) for key, value in runtime_env.items()}
 
     num_devices_per_stage = od_config.parallel_config.world_size
+    if od_config.execution_device == "cpu":
+        od_config.num_gpus = num_devices_per_stage
+        if metadata.cfg_kv_collect_func is not None:
+            od_config.cfg_kv_collect_func = metadata.cfg_kv_collect_func
+        return od_config
+
     device_control_env = current_omni_platform.device_control_env_var
     visible_devices_str = os.environ.get(device_control_env) if device_control_env else None
     physical_devices: list[str | int]

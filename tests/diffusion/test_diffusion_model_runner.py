@@ -1226,16 +1226,6 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch):
             del kwargs
             return SimpleNamespace(transformer=torch.nn.Identity())
 
-    class _DummyMemoryProfiler:
-        consumed_memory = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            del exc_type, exc, tb
-            return False
-
     class _DummyCacheBackend:
         def __init__(self):
             self.enabled = False
@@ -1264,7 +1254,8 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch):
 
     monkeypatch.setattr(model_runner_module, "LoadConfig", lambda: object())
     monkeypatch.setattr(model_runner_module, "DiffusersPipelineLoader", _DummyLoader)
-    monkeypatch.setattr(model_runner_module, "DeviceMemoryProfiler", _DummyMemoryProfiler)
+    memory_profiler = Mock(side_effect=pytest.fail)
+    monkeypatch.setattr(model_runner_module, "DeviceMemoryProfiler", memory_profiler)
     monkeypatch.setattr(
         model_runner_module,
         "enable_offload_backend",
@@ -1279,6 +1270,7 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch):
     assert runner.cache_backend is None
     assert runner.od_config.cache_backend is None
     assert dummy_cache_backend.enabled is False
+    memory_profiler.assert_not_called()
 
 
 @pytest.mark.core_model
