@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM-Omni project
 
 import importlib.util
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -17,26 +18,43 @@ assert _SPEC is not None and _SPEC.loader is not None
 patch_groupnorm = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = patch_groupnorm
 _SPEC.loader.exec_module(patch_groupnorm)
-patch_groupnorm._registry_mod.initialize_model = patch_groupnorm._original_initialize_model
+
+
+def test_import_does_not_load_diffusion_registry():
+    code = (
+        "import importlib.util, sys; "
+        f"spec = importlib.util.spec_from_file_location('groupnorm_patch', {str(_PATCH_PATH)!r}); "
+        "assert spec is not None and spec.loader is not None; "
+        "module = importlib.util.module_from_spec(spec); "
+        "spec.loader.exec_module(module); "
+        "assert 'vllm_omni.diffusion.registry' not in sys.modules"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.fixture(autouse=True)
+def aiter_available(monkeypatch):
+    # Exercise replacement on CPU so a missing Hunyuan guard cannot pass silently.
+    aiter_ops = types.ModuleType("vllm._aiter_ops")
+    setattr(aiter_ops, "is_aiter_found_and_supported", lambda: True)
+    monkeypatch.setitem(sys.modules, "vllm._aiter_ops", aiter_ops)
 
 
 def test_hunyuan_image3_keeps_pytorch_groupnorm(monkeypatch):
     model = types.SimpleNamespace(vae=nn.Sequential(nn.GroupNorm(4, 8)))
-    monkeypatch.setattr(patch_groupnorm, "_original_initialize_model", lambda _: model)
     monkeypatch.setattr(
         patch_groupnorm,
         "_replace_groupnorm_with_aiter",
         lambda _: pytest.fail("Hunyuan Image 3.0 must keep PyTorch GroupNorm"),
     )
 
-    od_config = types.SimpleNamespace(model_class_name="HunyuanImage3ForCausalMM")
-    assert patch_groupnorm._patched_initialize_model(od_config) is model
+    patch_groupnorm.apply_aiter_groupnorm(model, "HunyuanImage3ForCausalMM")
     assert type(model.vae[0]) is nn.GroupNorm
 
 
 def test_other_models_keep_aiter_groupnorm_patch(monkeypatch):
     model = types.SimpleNamespace(vae=nn.Sequential(nn.GroupNorm(4, 8)))
-    monkeypatch.setattr(patch_groupnorm, "_original_initialize_model", lambda _: model)
 
     replaced = False
 
@@ -46,10 +64,5 @@ def test_other_models_keep_aiter_groupnorm_patch(monkeypatch):
         return True
 
     monkeypatch.setattr(patch_groupnorm, "_replace_groupnorm_with_aiter", replace_groupnorm)
-    aiter_ops = types.ModuleType("vllm._aiter_ops")
-    setattr(aiter_ops, "is_aiter_found_and_supported", lambda: True)
-    monkeypatch.setitem(sys.modules, "vllm._aiter_ops", aiter_ops)
-
-    od_config = types.SimpleNamespace(model_class_name="OtherDiffusionModel")
-    assert patch_groupnorm._patched_initialize_model(od_config) is model
+    patch_groupnorm.apply_aiter_groupnorm(model, "OtherDiffusionModel")
     assert replaced
