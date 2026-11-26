@@ -113,6 +113,22 @@ def test_busy_loop_releases_failed_rpc_traceback_and_device_cache(monkeypatch):
     mock_platform.empty_cache.assert_called_once_with()
 
 
+def test_cleanup_after_execution_error_tolerates_missing_device_cache(monkeypatch):
+    original = RuntimeError("CPU execution failed")
+    gc_collect = Mock()
+    monkeypatch.setattr(diffusion_worker_module.gc, "collect", gc_collect)
+    monkeypatch.setattr(
+        diffusion_worker_module,
+        "current_omni_platform",
+        Mock(empty_cache=None),
+    )
+
+    diffusion_worker_module._cleanup_after_execution_error(original)
+
+    assert original.__traceback__ is None
+    gc_collect.assert_called_once_with()
+
+
 def test_busy_loop_preserves_order_when_overflow_payload_is_delayed(monkeypatch):
     """A consumed overflow marker must not be abandoned on a socket timeout."""
     writer = MessageQueue(

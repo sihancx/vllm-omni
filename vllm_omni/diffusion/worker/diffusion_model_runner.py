@@ -432,8 +432,9 @@ class DiffusionModelRunner(DiffusionStagePayloadMixin):
         model_loader = DiffusersPipelineLoader(load_config, od_config=self.od_config)
         time_before_load = time.perf_counter()
 
+        memory_profiler = DeviceMemoryProfiler() if self.device.type != "cpu" else nullcontext()
         with get_memory_context():
-            with DeviceMemoryProfiler() as m:
+            with memory_profiler as profiler:
                 self.pipeline = model_loader.load_model(
                     load_device=load_device,
                     load_format=load_format,
@@ -444,13 +445,14 @@ class DiffusionModelRunner(DiffusionStagePayloadMixin):
                 if initialize_lora is not None and getattr(self.pipeline, "requires_early_lora_init", False) is True:
                     initialize_lora()
         time_after_load = time.perf_counter()
+        consumed_memory = profiler.consumed_memory if profiler is not None else 0
 
         logger.info(
             "Model loading took %.4f GiB and %.6f seconds",
-            m.consumed_memory / GiB_bytes,
+            consumed_memory / GiB_bytes,
             time_after_load - time_before_load,
         )
-        self.model_memory_usage = int(m.consumed_memory)
+        self.model_memory_usage = int(consumed_memory)
         logger.info("Model runner: Model loaded successfully.")
         warn_if_denoise_graph_unsupported(self.od_config, self.pipeline)
 
@@ -937,6 +939,8 @@ class DiffusionModelRunner(DiffusionStagePayloadMixin):
         sampling_params = [req.sampling_params for req in reqs]
         attention_schedule = resolve_batch_attention_schedule(sampling_params, service)
         sigma_schedule = resolve_batch_attention_sigma_schedule(sampling_params, service)
+
+        record_output_peak_memory = record_output_peak_memory and self.device.type != "cpu"
 
         # Use no_grad() for HSDP compatibility, inference_mode() otherwise for
         # better perf. HSDP2's fully_shard pre-forward hooks need tensor version

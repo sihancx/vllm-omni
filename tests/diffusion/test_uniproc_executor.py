@@ -46,6 +46,34 @@ def test_multi_gpu_defaults_to_multiproc():
     assert DiffusionExecutor.get_class(_od_config(num_gpus=2)) is MultiprocDiffusionExecutor
 
 
+def test_multiproc_worker_threads_are_divided_between_ranks(monkeypatch: pytest.MonkeyPatch):
+    executor = object.__new__(MultiprocDiffusionExecutor)
+    executor.od_config = _od_config(num_gpus=4)
+    set_worker_envs = MagicMock()
+    monkeypatch.setattr(
+        "vllm_omni.diffusion.executor.multiproc_executor.set_multiprocessing_worker_envs",
+        set_worker_envs,
+    )
+    monkeypatch.setattr("vllm_omni.diffusion.executor.multiproc_executor.mp.set_start_method", MagicMock())
+
+    readers = []
+
+    def fake_pipe():
+        reader = MagicMock()
+        reader.recv.return_value = {"status": "ready", "result_handle": MagicMock()}
+        readers.append(reader)
+        return reader, MagicMock()
+
+    monkeypatch.setattr("vllm_omni.diffusion.executor.multiproc_executor.mp.Pipe", fake_pipe)
+    monkeypatch.setattr("vllm_omni.diffusion.executor.multiproc_executor.mp.Process", MagicMock)
+
+    processes, result_handles = executor._launch_workers(MagicMock(), [MagicMock() for _ in range(4)])
+
+    set_worker_envs.assert_called_once_with(local_world_size=4)
+    assert len(processes) == 4
+    assert len(result_handles) == 4
+
+
 def test_explicit_uni_backend_is_honored():
     assert DiffusionExecutor.get_class(_od_config(num_gpus=1, backend="uni")) is UniProcDiffusionExecutor
 

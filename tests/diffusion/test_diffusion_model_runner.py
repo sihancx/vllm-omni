@@ -1033,13 +1033,20 @@ def test_execute_model_passes_single_request_batch_to_non_admission_pipeline(mon
     req = _make_request()
 
     monkeypatch.setattr(model_runner_module, "set_forward_context", _noop_forward_context)
-    monkeypatch.setattr(model_runner_module, "current_omni_platform", _fake_platform_for_peak_memory())
+    peak_memory_platform = _fake_platform_for_peak_memory()
+    peak_memory_platform.reset_peak_memory_stats = Mock(side_effect=AssertionError("CPU must not reset GPU stats"))
+    peak_memory_platform.max_memory_reserved = Mock(side_effect=AssertionError("CPU must not sample GPU stats"))
+    peak_memory_platform.max_memory_allocated = Mock(side_effect=AssertionError("CPU must not sample GPU stats"))
+    monkeypatch.setattr(model_runner_module, "current_omni_platform", peak_memory_platform)
 
     output = DiffusionModelRunner.execute_model(runner, req)
 
     assert output.output == "a prompt"
     assert isinstance(runner.pipeline.last_req, DiffusionRequestBatch)
     assert runner.pipeline.last_req.num_reqs == 1
+    peak_memory_platform.reset_peak_memory_stats.assert_not_called()
+    peak_memory_platform.max_memory_reserved.assert_not_called()
+    peak_memory_platform.max_memory_allocated.assert_not_called()
 
 
 @pytest.mark.core_model
@@ -1436,16 +1443,6 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch, e
             events.append("weights_finalized")
             return SimpleNamespace(transformer=torch.nn.Identity(), requires_early_lora_init=early_lora)
 
-    class _DummyMemoryProfiler:
-        consumed_memory = 0
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            del exc_type, exc, tb
-            return False
-
     class _DummyCacheBackend:
         def __init__(self):
             self.enabled = False
@@ -1480,7 +1477,8 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch, e
 
     monkeypatch.setattr(model_runner_module, "LoadConfig", lambda: object())
     monkeypatch.setattr(model_runner_module, "DiffusersPipelineLoader", _DummyLoader)
-    monkeypatch.setattr(model_runner_module, "DeviceMemoryProfiler", _DummyMemoryProfiler)
+    memory_profiler = Mock(side_effect=pytest.fail)
+    monkeypatch.setattr(model_runner_module, "DeviceMemoryProfiler", memory_profiler)
 
     def offload(od_config, pipeline, device):
         events.append("offload")
@@ -1497,6 +1495,7 @@ def test_load_model_clears_cache_backend_for_unsupported_pipeline(monkeypatch, e
     assert runner.cache_backend is None
     assert runner.od_config.cache_backend is None
     assert dummy_cache_backend.enabled is False
+    memory_profiler.assert_not_called()
 
 
 @pytest.mark.core_model
